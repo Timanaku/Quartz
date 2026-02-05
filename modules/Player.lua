@@ -117,6 +117,20 @@ local slots = {
 	["Tabard"] = true,
 }
 
+
+-- local warlockHasteBuffs = {
+-- 	[52614] = .05,  -- Ruination
+-- 	[42027] = .05,  -- Sulfuron's Blaze
+-- 	[57692] = .10,  -- Elune's Courage
+-- 	[16322] = .03,  -- Juju Flurry
+-- 	[45425] = .05,  -- Potion of Quickness
+-- 	[51481] = .13,  -- Chastise (8sec)
+-- 	[52658] = .13,  -- Chastise (12sec)
+-- 	[51196] = -.25,  -- Curse of the Rift
+
+-- 	-- Add more buffs here as needed
+-- }
+
 local talentIncrease ={
 	["MAGE"] = {
 		["arcane"] = {1, 15, 1.05},
@@ -133,10 +147,12 @@ function Player:OnEnable()
 	self:ApplySettings()
 	channelingTicks = {
 		-- warlock
-		[SpellInfo(1120)] = 5, -- drain soul
+		[SpellInfo(1120)] = 6, -- drain soul
 		[SpellInfo(689)] = 5, -- drain life
 		[SpellInfo(5138)] = 5, -- drain mana
 		[SpellInfo(5740)] = 4, -- rain of fire
+		[SpellInfo(52552)] = 8, -- dark harvest
+		[SpellInfo(11684)] = 15, -- Hellfire
 		-- druid
 		[SpellInfo(740)] = 4, -- Tranquility
 		[SpellInfo(16914)] = 10, -- Hurricane
@@ -230,13 +246,13 @@ local barticks = setmetatable({}, sparkfactory)
 local function setBarTicks(ticknum)
 	if( ticknum and ticknum > 0) then
 		local delta = ( castBar:GetWidth() / ticknum )
-		for k = 1,ticknum do
+		for k = 0,ticknum-1 do
 			local t = barticks[k]
 			t:ClearAllPoints()
 			t:SetPoint("CENTER", castBar, "LEFT", delta * k, 0 )
 			t:Show()
 		end
-		for k = ticknum+1,getn(barticks) do
+		for k = ticknum,getn(barticks) do
 			barticks[k]:Hide()
 		end
 	else
@@ -246,38 +262,13 @@ local function setBarTicks(ticknum)
 		end
 	end
 end
-local spellTimeDecreases = {
-	[23723] = 1.33,   --  MGQ
-	--[26635] = 1.1,  -- Troll Race
-	[12042] = 1.3,		-- AP
-  [45425] = 1.05,		-- Hast pot
-    
-}
 
-
-local function getTrollBerserkHaste(unit)
-    local perc = UnitHealth(unit)/UnitHealthMax(unit)
-    local speed = min((1.3 - perc)/3, .15) + 1
-    return speed
-end
-
-local function getSpelldHaste(unit)
-    local positiveMul = 1
-    for i=1, 100 do
-        local tex, _, spellID = UnitBuff(unit, i)
-        if not tex then return positiveMul end
-        if spellTimeDecreases[spellID] or spellID == 26635 then
-            positiveMul = positiveMul * (spellTimeDecreases[spellID] or getTrollBerserkHaste(unit))
-        end
-    end
-    return positiveMul
-end
-
-local function checkItemInSlot(item, slot)
-	if not item or not slot then  return false end
-	local link = GetInventoryItemLink("player", GetInventorySlotInfo(slot.."Slot"))
-	local _, _, itemId = string.find(link, "|c%x+|Hitem:(%d+):(%d+):(%d+):(%d+)|h%[.-%]|h|r")
-	return tonumber(itemId) == item
+local function getPlayerModDuration()
+	local modCastSpeed = GetUnitField("player", "modCastSpeed")
+	-- modCastSpeed: 1.0 = normal, 0.9 = 10% faster, 1.1 = 10% slower
+	-- Convert to haste multiplier: 1 + h where h is % haste in decimals
+	-- If 0.9 (10% faster), we want 1.1 to divide by
+	return modCastSpeed
 end
 
 local function getHasteFromItems(unit)
@@ -302,6 +293,28 @@ local function getHasteFromItems(unit)
 	return haste
 end
 
+
+
+local function getMageHasteMultiplier()
+	-- Mage: Accelerated Arcana (tree 1, position 15, 1 point, 5% reduction)
+	if playerClass == "MAGE" then
+		local tal = isTalentKnown(1, 15, 0.95)
+		if tal > 0 then
+			return tal
+		end
+	end
+	return 1
+end
+
+local function getWarlockRapidDeterioration()
+	-- Warlock: Rapid Deterioration (tree 1, position 14, 2 points, 50/100% efficiency)
+	if playerClass == "WARLOCK" then
+		local tal = isTalentKnown(1, 14, 1)
+		return tal
+	end
+	return 0
+end
+
 local function checkPlayerBuff(spellId)
 	for i = 1, 100 do
 		local _, _, id = UnitBuff("player", i)
@@ -309,6 +322,23 @@ local function checkPlayerBuff(spellId)
 			return true
 		end
 	end
+end
+
+local function getActiveHasteBuff()
+	local totalHasteMult = 1
+	for buffId, hasteMultiplier in pairs(warlockHasteBuffs) do
+		if checkPlayerBuff(buffId) then
+			totalHasteMult = totalHasteMult+hasteMultiplier
+		end
+	end
+	return totalHasteMult
+end
+
+local function checkItemInSlot(item, slot)
+	if not item or not slot then  return false end
+	local link = GetInventoryItemLink("player", GetInventorySlotInfo(slot.."Slot"))
+	local _, _, itemId = string.find(link, "|c%x+|Hitem:(%d+):(%d+):(%d+):(%d+)|h%[.-%]|h|r")
+	return tonumber(itemId) == item
 end
 
 local function getChannelingTicks(spell)
@@ -321,6 +351,19 @@ local function getChannelingTicks(spell)
 	return channelingTicks[spell] or 0
 end
 
+local function roundUpTo(num, precision)
+	return math.ceil(num / precision) * precision
+end
+
+local function roundDownTo(num,precision)
+	return math.floor(num / precision) * precision
+end
+
+function round(num, decimals)
+  local mult = 10 ^ decimals
+  return math.floor(num * mult + 0.5) / mult
+end
+
 function Player:UNIT_SPELLCAST_START(bar, unit, spell)
 	if spell.id == 22810 then 
 		self.Bar.Text:SetText("Opening...")
@@ -328,22 +371,40 @@ function Player:UNIT_SPELLCAST_START(bar, unit, spell)
 	end
 	if bar.channeling then
 		local spell = SpellInfo(spell.id)
-		local calchaste = false
 		bar.channelingTicks = getChannelingTicks(spell)
 		setBarTicks(bar.channelingTicks)
 		local duration = self.Bar.endTime - self.Bar.startTime
-		local haste = 1 
+		local mod_duration = 1
+		local warlockReduction = 0.94
+		local mageReduction = getMageHasteMultiplier()
+		if mageReduction < 1 then
+			mod_duration = mod_duration * getPlayerModDuration() 
+		end
+		
+		-- Apply Warlock Rapid Deterioration talent (50/100% efficiency on channeled spells)
+		local warlockRD = getWarlockRapidDeterioration()
+		if warlockRD > 0 then
+			local efficiency = warlockRD * 0.5 
+			mod_duration = mod_duration * getPlayerModDuration()  * efficiency
+			-- haste = math.floor((haste-1)*100)/100 +1
+
+		end
+		
 		if spell == SpellInfo(52516) and checkPlayerBuff(52500) then -- Flash Freeze
 			duration = duration * 0.2
 		elseif spell == SpellInfo(5143) then
-			if checkItemInSlot( 47104, "Waist") then
+			if checkItemInSlot(47104, "Waist") then
 				duration = duration + 1
 			end
-			local k = isTalentKnown(1,15,1.05) -- Accelerated Arcana
-			haste = haste * getHasteFromItems("player") * getSpelldHaste("player") * (k > 0 and k or 1)
 		end
-		--print(duration, haste, duration/haste)
-		self.Bar.endTime = self.Bar.startTime + duration/haste
+		
+		if spell == SpellInfo(11684) then -- Hellfire
+			duration = 15
+		elseif warlockRD > 0 then 
+			self.Bar.endTime = self.Bar.startTime + duration * round(mod_duration* warlockReduction,2)
+		elseif mageReduction < 1 then
+			self.Bar.endTime = self.Bar.startTime + duration * round(mod_duration* mageReduction,2)
+		end
 	else
 		setBarTicks(0)
 	end

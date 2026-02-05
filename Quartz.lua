@@ -56,7 +56,7 @@ local defaults = {
 		bordercolor = {0, 0, 0},
 		backgroundalpha = 1,
 		borderalpha = 1,
-		casttimeprecision = 1,
+		casttimeprecision = 2,
 	},
 }
 
